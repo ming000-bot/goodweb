@@ -70,16 +70,15 @@
     </style>
     <!-- 播放依赖 -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.12/dist/hls.min.js"></script>
-    <!-- 下载依赖（用于解析M3U8和文件保存） -->
+    <!-- 下载依赖（用于解析M3U8） -->
     <script src="https://cdn.jsdelivr.net/npm/m3u8-parser@latest/dist/m3u8-parser.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/file-saver@latest/dist/FileSaver.min.js"></script>
     <!-- Excel解析依赖 -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
     <input type="text" id="m3u8-url" value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" placeholder="M3U8链接">
     <button onclick="playVideo()">播放</button>
-    <button onclick="downloadVideo()">下载合并TS文件</button>
+    <button onclick="downloadVideo()">下载TS分片</button>
     <button onclick="clearUrl()">清除</button>
     <video id="video-player" controls></video>
     
@@ -99,7 +98,7 @@
         </div>
     </div>
     
-    <div class="tips">提示：点击“下载合并TS文件”将下载所有TS分片并自动合并为一个TS文件（无需打包ZIP），文件名包含日期时间。</div>
+    <div class="tips">提示：点击“下载TS分片”将弹出文件夹选择窗口，选择保存位置后自动创建以日期时间命名的子文件夹，并逐个下载TS分片。</div>
 
     <script>
         // 全局变量
@@ -156,11 +155,17 @@
             updateEpisodeActiveStatus(url);
         }
 
-        // 下载TS分片并合并为一个TS文件（不再打包ZIP）
+        // 下载TS分片到用户选择的文件夹（自动创建日期时间子文件夹）
         async function downloadVideo() {
             const url = currentM3U8Url || urlInput.value.trim();
             if (!url) {
                 alert('请先输入并播放M3U8链接！');
+                return;
+            }
+
+            // 检查浏览器是否支持 File System Access API
+            if (!('showDirectoryPicker' in window)) {
+                alert('您的浏览器不支持 File System Access API，请使用最新版 Chrome 或 Edge 浏览器。');
                 return;
             }
 
@@ -184,34 +189,11 @@
                 const tsUrls = segments.map(seg => baseUrl + seg.uri);
                 const total = tsUrls.length;
 
-                // 2. 下载所有分片（保存为ArrayBuffer列表）
-                const tsBuffers = [];
-                let downloaded = 0;
-                statusText.textContent = `开始下载 ${total} 个TS分片...`;
-
-                for (const [index, tsUrl] of tsUrls.entries()) {
-                    const response = await fetch(tsUrl);
-                    if (!response.ok) throw new Error(`分片 ${index+1} 下载失败`);
-                    const buffer = await response.arrayBuffer();
-                    tsBuffers.push(buffer);
-
-                    downloaded++;
-                    const progress = Math.floor((downloaded / total) * 100);
-                    progressInner.style.width = `${progress}%`;
-                    statusText.textContent = `下载分片 ${downloaded}/${total}`;
-                }
-
-                // 3. 合并所有分片为一个大的ArrayBuffer
-                statusText.textContent = '正在合并TS分片...';
-                const totalLength = tsBuffers.reduce((acc, buf) => acc + buf.byteLength, 0);
-                const mergedBuffer = new Uint8Array(totalLength);
-                let offset = 0;
-                for (const buf of tsBuffers) {
-                    mergedBuffer.set(new Uint8Array(buf), offset);
-                    offset += buf.byteLength;
-                }
-
-                // 4. 生成带日期时间的文件名并下载
+                // 2. 弹出文件夹选择器
+                statusText.textContent = '请选择保存位置...';
+                const rootDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+                
+                // 3. 创建日期时间命名的子文件夹
                 const now = new Date();
                 const dateStr =
                     now.getFullYear() +
@@ -220,20 +202,51 @@
                     String(now.getHours()).padStart(2,'0') +
                     String(now.getMinutes()).padStart(2,'0') +
                     String(now.getSeconds()).padStart(2,'0');
-                const fileName = `m3u8_merged_${dateStr}.ts`;
+                const folderName = `m3u8_ts_${dateStr}`;
+                let targetDir;
+                try {
+                    targetDir = await rootDir.getDirectoryHandle(folderName, { create: true });
+                } catch (e) {
+                    throw new Error('无法创建文件夹：' + e.message);
+                }
 
-                const blob = new Blob([mergedBuffer], { type: 'video/mp2t' });
-                saveAs(blob, fileName);
+                // 4. 逐个下载并写入文件
+                let downloaded = 0;
+                statusText.textContent = `开始下载 ${total} 个TS分片到文件夹 "${folderName}" ...`;
+
+                for (let i = 0; i < tsUrls.length; i++) {
+                    const tsUrl = tsUrls[i];
+                    const response = await fetch(tsUrl);
+                    if (!response.ok) throw new Error(`分片 ${i+1} 下载失败`);
+                    const blob = await response.blob();
+
+                    // 文件名：segment_0001.ts 格式（补零）
+                    const fileName = `segment_${String(i+1).padStart(4, '0')}.ts`;
+                    const fileHandle = await targetDir.getFileHandle(fileName, { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+
+                    downloaded++;
+                    const progress = Math.floor((downloaded / total) * 100);
+                    progressInner.style.width = `${progress}%`;
+                    statusText.textContent = `已下载 ${downloaded}/${total} 个分片 (${fileName})`;
+                }
 
                 progressInner.style.width = '100%';
-                statusText.textContent = `下载完成！已保存为 ${fileName}`;
+                statusText.textContent = `全部 ${total} 个分片已保存到文件夹：${folderName}`;
             } catch (error) {
-                statusText.textContent = `下载失败: ${error.message}`;
-                console.error('下载合并失败：', error);
+                // 用户取消选择或其他错误
+                if (error.name === 'AbortError' || error.message.includes('abort')) {
+                    statusText.textContent = '用户取消了文件夹选择';
+                } else {
+                    statusText.textContent = `下载失败: ${error.message}`;
+                    console.error('下载失败：', error);
+                }
             } finally {
                 setTimeout(() => {
                     progressBar.style.display = 'none';
-                }, 3000);
+                }, 5000);
             }
         }
 
