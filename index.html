@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>M3U8播放器（支持Excel导入剧集）</title>
+    <style>
+        body { background: #000; padding: 20px; color: #fff; }
+        #m3u8-url { width: 80%; padding: 10px; background: #1a1a1a; border: 1px solid #444; color: #fff; margin-bottom: 10px; }
+        button { padding: 10px 20px; margin-right: 10px; cursor: pointer; }
+        #video-player { width: 100%; height: 800px; background: #111; margin-top: 10px; }
+        .tips { color: #999; font-size: 12px; margin-top: 8px; }
+        /* 下载进度条样式 */
+        .progress {
+            height: 8px;
+            width: 80%;
+            background-color: #1a1a1a;
+            border-radius: 4px;
+            margin: 10px 0;
+            display: none;
+        }
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #00ff9d;
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
+        .status {
+            margin-top: 10px;
+            color: #00ff9d;
+            font-size: 14px;
+        }
+        /* 剧集列表样式 */
+        .episode-upload {
+            margin: 20px 0;
+            padding: 15px;
+            background: #222;
+            border-radius: 8px;
+        }
+        .episode-list {
+            margin: 15px 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .episode-btn {
+            padding: 8px 16px;
+            background: #333;
+            border: 1px solid #555;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .episode-btn:hover {
+            background: #0099ff;
+            border-color: #0099ff;
+        }
+        .episode-btn.active {
+            background: #00ff9d;
+            border-color: #00ff9d;
+            color: #000;
+        }
+        .excel-tips {
+            color: #999;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+    </style>
+    <!-- 播放依赖 -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.12/dist/hls.min.js"></script>
+    <!-- 下载依赖（用于解析M3U8和文件保存） -->
+    <script src="https://cdn.jsdelivr.net/npm/m3u8-parser@latest/dist/m3u8-parser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/file-saver@latest/dist/FileSaver.min.js"></script>
+    <!-- Excel解析依赖 -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <input type="text" id="m3u8-url" value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" placeholder="M3U8链接">
+    <button onclick="playVideo()">播放</button>
+    <button onclick="downloadVideo()">下载合并TS文件</button>
+    <button onclick="clearUrl()">清除</button>
+    <video id="video-player" controls></video>
+    
+    <!-- 下载进度 -->
+    <div class="progress" id="progressBar">
+        <div class="progress-bar" id="progressInner"></div>
+    </div>
+    <div class="status" id="statusText"></div>
+    
+    <!-- Excel导入剧集区域 -->
+    <div class="episode-upload">
+        <h3>剧集导入</h3>
+        <input type="file" id="excelFile" accept=".xlsx,.xls" onchange="parseExcel(this)">
+        <div class="episode-list" id="episodeList"></div>
+        <div class="excel-tips">
+            提示：Excel文件要求：第一列为剧集序号（1、2、3...），第二列为对应M3U8链接；支持.xlsx/.xls格式，仅解析第一个工作表
+        </div>
+    </div>
+    
+    <div class="tips">提示：点击“下载合并TS文件”将下载所有TS分片并自动合并为一个TS文件（无需打包ZIP），文件名包含日期时间。</div>
+
+    <script>
+        // 全局变量
+        let video = document.getElementById('video-player');
+        let hls = null;
+        let currentM3U8Url = '';
+        // 下载进度元素
+        const progressBar = document.getElementById('progressBar');
+        const progressInner = document.getElementById('progressInner');
+        const statusText = document.getElementById('statusText');
+        // 输入框元素
+        const urlInput = document.getElementById('m3u8-url');
+        // 剧集相关变量
+        const episodeList = document.getElementById('episodeList');
+        let episodeMap = new Map(); // 存储 集数:链接 的映射
+
+        // 播放函数
+        function playVideo(playUrl) {
+            const url = playUrl || urlInput.value.trim();
+            if (!url) {
+                alert('请输入M3U8链接！');
+                return;
+            }
+            urlInput.value = url;
+            currentM3U8Url = url;
+
+            if (hls) hls.destroy();
+            video.src = '';
+
+            if (!Hls.isSupported()) {
+                alert('浏览器不支持HLS！');
+                return;
+            }
+
+            hls = new Hls();
+            hls.loadSource(url);
+            hls.attachMedia(video);
+
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                video.play().catch(err => {
+                    console.log('自动播放失败，手动点击播放器播放即可：', err);
+                });
+            });
+
+            hls.on(Hls.Events.ERROR, (e, d) => {
+                const fatalErrorCodes = [Hls.ErrorCodes.NETWORK_ERROR, Hls.ErrorCodes.MANIFEST_ERROR];
+                if (fatalErrorCodes.includes(d.error.code)) {
+                    alert('播放失败：' + d.error.message);
+                } else {
+                    console.log('播放非致命错误：', d.error.message);
+                }
+            });
+
+            updateEpisodeActiveStatus(url);
+        }
+
+        // 下载TS分片并合并为一个TS文件（不再打包ZIP）
+        async function downloadVideo() {
+            const url = currentM3U8Url || urlInput.value.trim();
+            if (!url) {
+                alert('请先输入并播放M3U8链接！');
+                return;
+            }
+
+            progressBar.style.display = 'block';
+            progressInner.style.width = '0%';
+            statusText.textContent = '正在解析M3U8文件...';
+
+            try {
+                // 1. 解析M3U8获取分片列表
+                const m3u8Response = await fetch(url);
+                if (!m3u8Response.ok) throw new Error('M3U8文件获取失败');
+                const m3u8Text = await m3u8Response.text();
+
+                const parser = new m3u8Parser.Parser();
+                parser.push(m3u8Text);
+                parser.end();
+                const segments = parser.manifest.segments;
+                if (!segments || segments.length === 0) throw new Error('未找到TS分片');
+
+                const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+                const tsUrls = segments.map(seg => baseUrl + seg.uri);
+                const total = tsUrls.length;
+
+                // 2. 下载所有分片（保存为ArrayBuffer列表）
+                const tsBuffers = [];
+                let downloaded = 0;
+                statusText.textContent = `开始下载 ${total} 个TS分片...`;
+
+                for (const [index, tsUrl] of tsUrls.entries()) {
+                    const response = await fetch(tsUrl);
+                    if (!response.ok) throw new Error(`分片 ${index+1} 下载失败`);
+                    const buffer = await response.arrayBuffer();
+                    tsBuffers.push(buffer);
+
+                    downloaded++;
+                    const progress = Math.floor((downloaded / total) * 100);
+                    progressInner.style.width = `${progress}%`;
+                    statusText.textContent = `下载分片 ${downloaded}/${total}`;
+                }
+
+                // 3. 合并所有分片为一个大的ArrayBuffer
+                statusText.textContent = '正在合并TS分片...';
+                const totalLength = tsBuffers.reduce((acc, buf) => acc + buf.byteLength, 0);
+                const mergedBuffer = new Uint8Array(totalLength);
+                let offset = 0;
+                for (const buf of tsBuffers) {
+                    mergedBuffer.set(new Uint8Array(buf), offset);
+                    offset += buf.byteLength;
+                }
+
+                // 4. 生成带日期时间的文件名并下载
+                const now = new Date();
+                const dateStr =
+                    now.getFullYear() +
+                    String(now.getMonth()+1).padStart(2,'0') +
+                    String(now.getDate()).padStart(2,'0') + '_' +
+                    String(now.getHours()).padStart(2,'0') +
+                    String(now.getMinutes()).padStart(2,'0') +
+                    String(now.getSeconds()).padStart(2,'0');
+                const fileName = `m3u8_merged_${dateStr}.ts`;
+
+                const blob = new Blob([mergedBuffer], { type: 'video/mp2t' });
+                saveAs(blob, fileName);
+
+                progressInner.style.width = '100%';
+                statusText.textContent = `下载完成！已保存为 ${fileName}`;
+            } catch (error) {
+                statusText.textContent = `下载失败: ${error.message}`;
+                console.error('下载合并失败：', error);
+            } finally {
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        // 清除
+        function clearUrl() {
+            urlInput.value = '';
+            currentM3U8Url = '';
+            if (video) {
+                video.pause();
+                video.src = '';
+                video.load();
+            }
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
+            progressBar.style.display = 'none';
+            progressInner.style.width = '0%';
+            statusText.textContent = '';
+            episodeList.innerHTML = '';
+            episodeMap.clear();
+            alert('已成功清除M3U8地址并停止播放！');
+        }
+
+        // 解析Excel
+        function parseExcel(fileInput) {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const fileExt = file.name.split('.').pop().toLowerCase();
+            if (!['xlsx', 'xls'].includes(fileExt)) {
+                alert('请上传.xlsx或.xls格式的Excel文件！');
+                fileInput.value = '';
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: ['episode', 'url'] });
+
+                    const validData = jsonData.filter(item => {
+                        return item.episode && item.url &&
+                               !isNaN(Number(item.episode)) &&
+                               item.url.trim().startsWith('http');
+                    });
+
+                    if (validData.length === 0) {
+                        alert('Excel中未找到有效的剧集数据！请检查格式：第一列是数字序号，第二列是M3U8链接');
+                        return;
+                    }
+
+                    validData.sort((a, b) => Number(a.episode) - Number(b.episode));
+
+                    episodeList.innerHTML = '';
+                    episodeMap.clear();
+
+                    validData.forEach(item => {
+                        const episodeNum = Number(item.episode);
+                        const m3u8Url = item.url.trim();
+                        episodeMap.set(episodeNum, m3u8Url);
+
+                        const btn = document.createElement('button');
+                        btn.className = 'episode-btn';
+                        btn.innerText = episodeNum;
+                        btn.onclick = function() {
+                            playVideo(m3u8Url);
+                        };
+                        episodeList.appendChild(btn);
+                    });
+
+                    alert(`成功导入 ${validData.length} 集剧集链接！`);
+                } catch (error) {
+                    console.error('解析Excel失败：', error);
+                    alert('Excel解析失败，请检查文件格式或内容是否正确！');
+                } finally {
+                    fileInput.value = '';
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // 更新剧集按钮激活状态
+        function updateEpisodeActiveStatus(currentUrl) {
+            const allBtns = document.querySelectorAll('.episode-btn');
+            allBtns.forEach(btn => btn.classList.remove('active'));
+            for (const [num, url] of episodeMap.entries()) {
+                if (url === currentUrl) {
+                    const targetBtn = Array.from(allBtns).find(btn => btn.innerText == num);
+                    if (targetBtn) targetBtn.classList.add('active');
+                    break;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
