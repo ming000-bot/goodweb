@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <!-- 完善移动端视口，禁止缩放 -->
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>M3U8播放器（支持Excel导入剧集）</title>
     <style>
@@ -41,20 +41,33 @@
             background:#3366cc;
             color:#fff;
             font-size:15px;
-            /* 移动端触控优化 */
+
             touch-action: manipulation;
             -webkit-tap-highlight-color: transparent;
         }
         button:active{
             opacity:0.8;
         }
-        #video-player {
+
+        .player-container{
             width: 100%;
-            /* 响应式高度：电脑高，手机自适应 */
             aspect-ratio: 16 / 9;
+            max-height: 95vh;
             background: #111;
             margin-top: 10px;
             border-radius:6px;
+            overflow:hidden;
+            position:relative;
+            background-size: cover;
+            background-position:center;
+            background-repeat:no-repeat;
+        }
+        #video-player {
+            width: 100%;
+            height:100%;
+            display:block;
+            position:relative;
+            z-index:2;
         }
         .tips {
             color: #999;
@@ -62,7 +75,7 @@
             margin-top: 8px;
             line-height:1.5;
         }
-        /* 下载进度条样式 */
+
         .progress {
             height: 10px;
             width: 100%;
@@ -84,7 +97,7 @@
             font-size: 14px;
             word-break: break-all;
         }
-        /* 剧集列表样式 */
+
         .episode-upload {
             margin: 20px 0;
             padding: 15px;
@@ -111,7 +124,7 @@
             transition: all 0.2s;
             font-size:15px;
             min-width:44px;
-            /* 移动端点击区域 */
+
             touch-action: manipulation;
             -webkit-tap-highlight-color: transparent;
         }
@@ -130,7 +143,7 @@
             margin-top: 8px;
             line-height:1.5;
         }
-        /* 媒体查询：手机小屏幕 */
+
         @media (max-width: 480px) {
             body{
                 padding:8px;
@@ -158,15 +171,17 @@
         <button onclick="downloadVideo()">下载TS分片</button>
         <button onclick="clearUrl()">清除</button>
     </div>
-    <video id="video-player" controls></video>
+
+    <div class="player-container" id="playerContainer">
+        <video id="video-player" controls></video>
+    </div>
     
-    <!-- 下载进度 -->
+
     <div class="progress" id="progressBar">
         <div class="progress-bar" id="progressInner"></div>
     </div>
     <div class="status" id="statusText"></div>
-    
-    <!-- Excel导入剧集区域 -->
+
     <div class="episode-upload">
         <h3>剧集导入</h3>
         <input type="file" id="excelFile" accept=".xlsx,.xls" onchange="parseExcel(this)">
@@ -177,24 +192,46 @@
     </div>
     
     <div class="tips">
-        ⚠️提示：下载TS分片功能仅支持电脑端Chrome/Edge；手机浏览器不支持文件夹写入API。点击“下载TS分片”将选择保存位置后自动创建以日期时间命名的子文件夹，并逐个下载TS分片。
+        ⚠️提示：下载TS分片功能仅支持电脑端Chrome/Edge；手机浏览器不支持文件夹写入API。
     </div>
     <script>
-        // 全局变量
+
+        const PLAYER_BG_IMAGE = "image.jpg";
+        const VIDEO_OPACITY = 0.7; 
+
+
         let video = document.getElementById('video-player');
         let hls = null;
         let currentM3U8Url = '';
-        // 下载进度元素
+        const playerContainer = document.getElementById('playerContainer');
+
         const progressBar = document.getElementById('progressBar');
         const progressInner = document.getElementById('progressInner');
         const statusText = document.getElementById('statusText');
-        // 输入框元素
-        const urlInput = document.getElementById('m3u8-url');
-        // 剧集相关变量
-        const episodeList = document.getElementById('episodeList');
-        let episodeMap = new Map(); // 存储 集数:链接 的映射
 
-        // 播放函数
+        const urlInput = document.getElementById('m3u8-url');
+
+        const episodeList = document.getElementById('episodeList');
+        let episodeMap = new Map(); 
+
+
+        video.style.opacity = VIDEO_OPACITY;
+
+        (function initPlayerBackground(){
+            const imgUrl = PLAYER_BG_IMAGE.trim();
+            if(!imgUrl) return;
+            const testImg = new Image();
+            testImg.onload = function(){
+                playerContainer.style.backgroundImage = `url(${imgUrl})`;
+                console.log("背景图片加载成功");
+            }
+            testImg.onerror = function(){
+                console.log("背景图片加载失败，使用默认黑色背景");
+            }
+            testImg.src = imgUrl;
+        })();
+
+
         function playVideo(playUrl) {
             const url = playUrl || urlInput.value.trim();
             if (!url) {
@@ -205,7 +242,7 @@
             currentM3U8Url = url;
             if (hls) hls.destroy();
             video.src = '';
-            // HLS判断
+
             if (!Hls.isSupported()) {
                 // 原生支持hls的Safari
                 video.src = url;
@@ -214,7 +251,7 @@
                 return;
             }
             hls = new Hls({
-                // 移动端优化配置，降低缓冲卡顿
+
                 lowLatencyMode: true,
                 maxBufferLength: 20,
                 maxMaxBufferLength:30
@@ -237,14 +274,14 @@
             updateEpisodeActiveStatus(url);
         }
 
-        // 下载TS分片到用户选择的文件夹（自动创建日期时间子文件夹）
+
         async function downloadVideo() {
             const url = currentM3U8Url || urlInput.value.trim();
             if (!url) {
                 alert('请先输入并播放M3U8链接！');
                 return;
             }
-            // 检查浏览器是否支持 File System Access API
+
             if (!('showDirectoryPicker' in window)) {
                 alert('⚠️当前浏览器不支持文件夹下载，该功能仅电脑Chrome/Edge可用，手机浏览器不支持！');
                 return;
@@ -253,7 +290,7 @@
             progressInner.style.width = '0%';
             statusText.textContent = '正在解析M3U8文件...';
             try {
-                // 1. 解析M3U8获取分片列表
+
                 const m3u8Response = await fetch(url);
                 if (!m3u8Response.ok) throw new Error('M3U8文件获取失败');
                 const m3u8Text = await m3u8Response.text();
@@ -262,14 +299,13 @@
                 parser.end();
                 const segments = parser.manifest.segments;
                 if (!segments || segments.length === 0) throw new Error('未找到TS分片');
-                const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
                 const tsUrls = segments.map(seg => new URL(seg.uri, url).href); // 使用URL对象修复相对路径bug
                 const total = tsUrls.length;
-                // 2. 弹出文件夹选择器
+
                 statusText.textContent = '请选择保存位置...';
                 const rootDir = await window.showDirectoryPicker({ mode: 'readwrite' });
                 
-                // 3. 创建日期时间命名的子文件夹
+
                 const now = new Date();
                 const dateStr =
                     now.getFullYear() +
@@ -285,7 +321,7 @@
                 } catch (e) {
                     throw new Error('无法创建文件夹：' + e.message);
                 }
-                // 4. 逐个下载并写入文件
+
                 let downloaded = 0;
                 statusText.textContent = `开始下载 ${total} 个TS分片到文件夹 "${folderName}" ...`;
                 for (let i = 0; i < tsUrls.length; i++) {
@@ -293,7 +329,7 @@
                     const response = await fetch(tsUrl);
                     if (!response.ok) throw new Error(`分片 ${i+1} 下载失败`);
                     const blob = await response.blob();
-                    // 文件名：segment_0001.ts 格式（补零）
+
                     const fileName = `segment_${String(i+1).padStart(4, '0')}.ts`;
                     const fileHandle = await targetDir.getFileHandle(fileName, { create: true });
                     const writable = await fileHandle.createWritable();
@@ -307,7 +343,7 @@
                 progressInner.style.width = '100%';
                 statusText.textContent = `全部 ${total} 个分片已保存到文件夹：${folderName}`;
             } catch (error) {
-                // 用户取消选择或其他错误
+
                 if (error.name === 'AbortError' || error.message.includes('abort')) {
                     statusText.textContent = '用户取消了文件夹选择';
                 } else {
@@ -321,7 +357,7 @@
             }
         }
 
-        // 清除
+
         function clearUrl() {
             urlInput.value = '';
             currentM3U8Url = '';
@@ -342,7 +378,7 @@
             alert('已成功清除M3U8地址并停止播放！');
         }
 
-        // 解析Excel
+
         function parseExcel(fileInput) {
             const file = fileInput.files[0];
             if (!file) return;
@@ -395,7 +431,7 @@
             reader.readAsArrayBuffer(file);
         }
 
-        // 更新剧集按钮激活状态
+
         function updateEpisodeActiveStatus(currentUrl) {
             const allBtns = document.querySelectorAll('.episode-btn');
             allBtns.forEach(btn => btn.classList.remove('active'));
